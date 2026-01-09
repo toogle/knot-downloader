@@ -1,6 +1,12 @@
-use std::{collections::HashMap, env, fs, path::Path, process::ExitCode, time::Duration};
+use std::{collections::HashMap, env, fs, io, path::Path, process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
+use chrono::Local;
+use fern::{
+    Dispatch,
+    colors::{Color, ColoredLevelConfig},
+};
+use log::LevelFilter;
 use reqwest::{Client, StatusCode, header};
 use serde::Deserialize;
 
@@ -8,7 +14,9 @@ use serde::Deserialize;
 struct Config {
     #[serde(with = "humantime_serde")]
     interval: Duration,
+    #[serde(default)]
     create_directories: bool,
+    log_level: LevelFilter,
     files: Vec<FileEntry>,
 }
 
@@ -18,12 +26,39 @@ struct FileEntry {
     path: String,
 }
 
+fn setup_logger(level: LevelFilter) -> Result<()> {
+    let colors = ColoredLevelConfig::new()
+        .error(Color::Red)
+        .warn(Color::Yellow)
+        .info(Color::Green)
+        .debug(Color::BrightBlack);
+
+    Dispatch::new()
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "{} {:<5} {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                colors.color(record.level()),
+                message,
+            ))
+        })
+        .filter(|metadata| metadata.target() == module_path!())
+        .level(level)
+        .chain(io::stdout())
+        .apply()
+        .context("Failed to setup logger")?;
+
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     let config_path = env::var("CONFIG_PATH").unwrap_or("config.yml".to_string());
     let config = fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read config file from {config_path:?}"))?;
     let config: Config = serde_yaml::from_str(&config)
         .with_context(|| format!("Failed to parse config file from {config_path:?}"))?;
+
+    setup_logger(config.log_level)?;
 
     let client = Client::new();
     let mut etags = HashMap::new();
@@ -56,13 +91,13 @@ async fn run() -> Result<()> {
                     fs::write(path, body)
                         .with_context(|| format!("Failed to write file to {path:?}"))?;
 
-                    println!("Downloaded {} to {} ({})", url, path, body_len);
+                    log::info!("Downloaded {} to {} ({})", url, path, body_len);
                 }
                 Ok(resp) if resp.status() == StatusCode::NOT_MODIFIED => {
-                    println!("Skipped {} (not modified)", url)
+                    log::debug!("Skipped {} (not modified)", url)
                 }
-                Ok(resp) => eprintln!("Failed to download {}: {}", url, resp.status()),
-                Err(err) => eprintln!("Failed to download {}: {}", url, err),
+                Ok(resp) => log::error!("Failed to download {}: {}", url, resp.status()),
+                Err(err) => log::error!("Failed to download {}: {}", url, err),
             }
         }
 

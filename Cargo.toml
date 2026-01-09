@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = { version = "1.0", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fern = { version = "0.7", default-features = false, features = ["colored"] }
 human_bytes = { version = "0.4", default-features = false }
 humantime-serde = { version = "1.1", default-features = false }
+log = { version = "0.4", default-features = false, features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_yaml = { version = "0.9", default-features = false }

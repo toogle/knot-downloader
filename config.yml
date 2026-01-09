@@ -1,5 +1,6 @@
 interval: 1h
 create_directories: true
+log_level: info
 files:
   - url: https://o0.pages.dev/Lite/rpz.txt
     path: data/o0-lite.rpz
