@@ -1,0 +1,7 @@
+interval: 1h
+create_directories: true
+files:
+  - url: https://o0.pages.dev/Lite/rpz.txt
+    path: data/o0-lite.rpz
+  - url: https://big.oisd.nl/rpz
+    path: data/oisd-big.rpz
