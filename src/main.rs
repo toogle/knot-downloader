@@ -2,10 +2,12 @@ use std::{collections::HashMap, env, fs, io, path::Path, process::ExitCode, time
 
 use anyhow::{Context, Result};
 use chrono::Local;
+use colored::Colorize;
 use fern::{
     Dispatch,
     colors::{Color, ColoredLevelConfig},
 };
+use imara_diff::{Algorithm, Diff, InternedInput};
 use log::LevelFilter;
 use reqwest::{Client, StatusCode, header};
 use serde::Deserialize;
@@ -88,10 +90,26 @@ async fn run() -> Result<()> {
                         .await
                         .with_context(|| format!("Failed to read response body from {url:?}"))?;
                     let body_len = human_bytes::human_bytes(body.len() as f64);
-                    fs::write(path, body)
-                        .with_context(|| format!("Failed to write file to {path:?}"))?;
 
-                    log::info!("Downloaded {} to {} ({})", url, path, body_len);
+                    let current = fs::read_to_string(path).unwrap_or_default();
+                    let input = InternedInput::new(current.as_str(), body.as_str());
+                    let diff = Diff::compute(Algorithm::Histogram, &input);
+
+                    if diff.count_additions() > 0 || diff.count_removals() > 0 {
+                        fs::write(path, body)
+                            .with_context(|| format!("Failed to write file to {path:?}"))?;
+
+                        log::info!(
+                            "Downloaded {} to {} ({}, {}/{})",
+                            url,
+                            path,
+                            body_len,
+                            format!("+{}", diff.count_additions()).green(),
+                            format!("-{}", diff.count_removals()).red(),
+                        );
+                    } else {
+                        log::debug!("Skipped {} (no changes)", url);
+                    }
                 }
                 Ok(resp) if resp.status() == StatusCode::NOT_MODIFIED => {
                     log::debug!("Skipped {} (not modified)", url)
@@ -107,6 +125,9 @@ async fn run() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Force colored output in Docker environments
+    colored::control::set_override(true);
+
     if let Err(err) = run().await {
         eprintln!("Error: {err}\n\nCaused by:");
         for cause in err.chain().skip(1) {
