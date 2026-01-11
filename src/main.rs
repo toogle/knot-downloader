@@ -53,20 +53,51 @@ fn setup_logger(level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
-async fn run() -> Result<()> {
-    let config_path = env::var("CONFIG_PATH").unwrap_or("config.yml".to_string());
-    let config = fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read config file from {config_path:?}"))?;
-    let config: Config = serde_yaml::from_str(&config)
-        .with_context(|| format!("Failed to parse config file from {config_path:?}"))?;
+async fn wait_for_shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
 
-    setup_logger(config.log_level)?;
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("Failed to install SIGTERM handler")?;
+        let mut sigint =
+            signal(SignalKind::interrupt()).context("Failed to install SIGINT handler")?;
 
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+
+        let mut ctrl_c = windows::ctrl_c().context("Failed to install Ctrl-C handler")?;
+        let mut ctrl_break =
+            windows::ctrl_break().context("Failed to install Ctrl-Break handler")?;
+        let mut ctrl_close =
+            windows::ctrl_close().context("Failed to install Ctrl-Close handler")?;
+        let mut ctrl_shutdown =
+            windows::ctrl_shutdown().context("Failed to install Ctrl-Shutdown handler")?;
+
+        tokio::select! {
+            _ = ctrl_c.recv() => {},
+            _ = ctrl_break.recv() => {},
+            _ = ctrl_close.recv() => {},
+            _ = ctrl_shutdown.recv() => {},
+        }
+    }
+
+    Ok(())
+}
+
+async fn download_files(files: &[FileEntry], interval: Duration) -> Result<()> {
     let client = Client::new();
     let mut etags = HashMap::new();
 
     loop {
-        for FileEntry { url, path } in &config.files {
+        for FileEntry { url, path } in files {
             let mut req = client.get(url);
             if let Some(etag) = etags.get(url) {
                 req = req.header(header::IF_NONE_MATCH, etag);
@@ -76,13 +107,6 @@ async fn run() -> Result<()> {
                 Ok(resp) if resp.status().is_success() => {
                     if let Some(etag) = resp.headers().get(header::ETAG) {
                         etags.insert(url, etag.to_str().unwrap().to_string());
-                    }
-
-                    if config.create_directories {
-                        let dir = Path::new(&path).parent().unwrap();
-                        fs::create_dir_all(dir).with_context(|| {
-                            format!("Failed to create directories for {path:?}")
-                        })?;
                     }
 
                     let body = resp
@@ -119,8 +143,40 @@ async fn run() -> Result<()> {
             }
         }
 
-        tokio::time::sleep(config.interval).await;
+        tokio::time::sleep(interval).await;
     }
+}
+
+async fn run() -> Result<()> {
+    let config_path = env::var("CONFIG_PATH").unwrap_or("config.yml".to_string());
+    let config = fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read config file from {config_path:?}"))?;
+    let config: Config = serde_yaml::from_str(&config)
+        .with_context(|| format!("Failed to parse config file from {config_path:?}"))?;
+
+    setup_logger(config.log_level)?;
+
+    if config.create_directories {
+        for FileEntry { url: _, path } in &config.files {
+            if let Some(parent) = Path::new(&path).parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create directories for {path:?}"))?;
+            }
+        }
+    }
+
+    loop {
+        tokio::select! {
+            res = download_files(&config.files, config.interval) => { res? }
+            res = wait_for_shutdown_signal() => {
+                res?;
+                log::warn!("Shutting down...");
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -135,5 +191,6 @@ async fn main() -> ExitCode {
         }
         return ExitCode::from(1);
     }
+
     ExitCode::SUCCESS
 }
